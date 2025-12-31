@@ -24,11 +24,11 @@ const DEFAULTS = {
 
 // Initialize Gemini
 // Using gemini-2.0-flash-exp if possible for speed/intelligence, or fallback to reliable
-// User had quota issues with 2.5-flash. Let's try gemini-1.5-flash-8b (lighter) or stay with flash-lite
+// User had quota issues with 2.5-flash. Let's try  or stay with flash-lite
 const genAI = new GoogleGenerativeAI(GEMINI_API_KEY);
 const fileManager = new GoogleAIFileManager(GEMINI_API_KEY);
 // Use Gemini 2.5 Flash Lite - User preference
-const model = genAI.getGenerativeModel({ model: "gemini-2.5-flash-lite" });
+const model = genAI.getGenerativeModel({ model: "gemini-2.5-pro" });
 
 // --- FILES ---
 const QP_FILE_PATH = path.join(__dirname, "0580_m25_qp_42.pdf");
@@ -42,7 +42,7 @@ const NEW_DEFAULTS = {
     subjectId: "", // Will be auto-detected
     exam: "IGCSE",
     year: [2025],
-    month: ["March"],
+    month: ["Feb/March"],  // Abbreviated combined month format for IGCSE
     paper: ["Paper 4", "Variant 2"], // Proper format
     criteria: "Total Marks: 130"
 };
@@ -104,6 +104,56 @@ function repairJson(jsonStr) {
         console.warn(`    [JSON Repair Failed] Returning empty structure`);
         return '{"questions":[]}';
     }
+}
+
+// Strip LaTeX formatting and convert to simple text/HTML
+function stripLatex(text) {
+    if (!text) return text;
+
+    // Remove inline math delimiters $...$
+    text = text.replace(/\$([^$]+)\$/g, (match, content) => {
+        // Convert common LaTeX to HTML
+        let cleaned = content
+            .replace(/\\sqrt\{([^}]+)\}/g, '√($1)')
+            .replace(/\\frac\{([^}]+)\}\{([^}]+)\}/g, '($1)/($2)')
+            .replace(/\\vec\{([^}]+)\}/g, '$1')
+            .replace(/\^(\d+)/g, '<sup>$1</sup>')
+            .replace(/\^{([^}]+)}/g, '<sup>$1</sup>')
+            .replace(/_(\d+)/g, '<sub>$1</sub>')
+            .replace(/_{([^}]+)}/g, '<sub>$1</sub>')
+            .replace(/\\pi/g, 'π')
+            .replace(/\\theta/g, 'θ')
+            .replace(/\\alpha/g, 'α')
+            .replace(/\\beta/g, 'β')
+            .replace(/\\times/g, '×')
+            .replace(/\\div/g, '÷')
+            .replace(/\\cdot/g, '·')
+            .replace(/\\/g, ''); // Remove remaining backslashes
+        return cleaned;
+    });
+
+    // Remove block math delimiters $$...$$
+    text = text.replace(/\$\$([^$]+)\$\$/g, (match, content) => {
+        let cleaned = content
+            .replace(/\\sqrt\{([^}]+)\}/g, '√($1)')
+            .replace(/\\frac\{([^}]+)\}\{([^}]+)\}/g, '($1)/($2)')
+            .replace(/\\vec\{([^}]+)\}/g, '$1')
+            .replace(/\^(\d+)/g, '<sup>$1</sup>')
+            .replace(/\^{([^}]+)}/g, '<sup>$1</sup>')
+            .replace(/_(\d+)/g, '<sub>$1</sub>')
+            .replace(/_{([^}]+)}/g, '<sub>$1</sub>')
+            .replace(/\\pi/g, 'π')
+            .replace(/\\theta/g, 'θ')
+            .replace(/\\alpha/g, 'α')
+            .replace(/\\beta/g, 'β')
+            .replace(/\\times/g, '×')
+            .replace(/\\div/g, '÷')
+            .replace(/\\cdot/g, '·')
+            .replace(/\\/g, '');
+        return `<p>${cleaned}</p>`;
+    });
+
+    return text;
 }
 
 // --- API Functions ---
@@ -220,13 +270,20 @@ async function buildAnswerBank() {
         
         The data is presented in a table with columns: "Question", "Answer", "Marks", "Guidance/Partial Marks".
         
+        CRITICAL FOR TABLES/MATRICES IN ANSWERS:
+        *** IF THE ANSWER CONTAINS A TABLE/MATRIX: COUNT EVERY ROW AND COLUMN ***
+        - Count rows: 1, 2, 3, 4, 5... (count ALL rows)
+        - Count columns: 1, 2, 3, 4, 5... (count ALL columns)
+        - Include COMPLETE table/matrix in answer - do NOT truncate
+        - Verify you captured ALL cells, even empty ones
+        
         TASK:
         Extract ONLY rows where the "Question" column contains a valid question identifier (e.g., 1, 1(a), 2(b)(ii)).
         Ignore cover pages, general marking principles, or header text.
         
         STRUCTURE FORMAT:
         Q: [Question Identifier]
-        A: [Answer Content]
+        A: [Answer Content - COMPLETE if table/matrix]
         S: [Partial Marks / Guidance Content]
         M: [Marks]
         
@@ -302,7 +359,7 @@ async function buildAnswerBank() {
                         solution: formattedSolution,
                         explanation: "IGCSE Standard Method",
                         point: parseInt(marks) || 1,
-                        level: (parseInt(marks) || 1) > 4 ? "Hard" : ((parseInt(marks) || 1) > 2 ? "Medium" : "Easy")
+                        level: "Medium"  // All questions default to Medium as per user request
                     };
                     Count++;
                 }
@@ -340,7 +397,11 @@ async function autoDetectSubject(firstPageImagePath) {
     const prompt = `
     Analyze this exam paper page.
     1. Identify the SUBJECT (e.g. Mathematics, Physics, English).
-    2. Extract the YEAR, MONTH, and PAPER NUMBER from the text (e.g. "March 2025", "Paper 4") if visible.
+    2. Extract the YEAR, MONTH, and PAPER NUMBER from the text.
+       - MONTH: Use EXACT abbreviated format shown on paper:
+         * "February/March" → "Feb/March"
+         * "May/June" → "May/June"
+         * "October/November" → "Oct/Nov"
     3. Select the BEST MATCH from the provided list of Available Subjects.
     
     Available Subjects:
@@ -351,7 +412,7 @@ async function autoDetectSubject(firstPageImagePath) {
       "subjectId": "THE_MATCHED_ID", 
       "subjectName": "NAME",
       "year": 2025,
-      "month": "March",
+      "month": "Feb/March",
       "paper": "Paper 4" 
     }
     `;
@@ -490,20 +551,69 @@ async function analyzePage(imagePath, pageIndex, curriculumMapString) {
        EXAMPLE - GOOD:
        "<p><strong>Question 1(a):</strong></p><p>The area, <em>A</em>, of a circle is given...</p>"
     
-    2. MATHEMATICAL FORMATTING (LATEX + HTML):
-       - Use LaTeX for complex equations but YOU MUST ESCAPE BACKSLASHES for JSON string safety.
-       - Example: "Area = \\\\pi r^2" (Double backslash in JSON string -> Single in final string)
-       - If unsure, use HTML. But LaTeX is preferred for "beautiful" math.
-       - Inline Math: $...$  (e.g., "$A = \\\\pi r^2$")
-       - Block Math: $$...$$
+    2. MATHEMATICAL FORMATTING (CRITICAL - NO LATEX ALLOWED):
+       *** ABSOLUTELY NO DOLLAR SIGNS ($) OR LATEX SYNTAX ***
+       - DO NOT use $...$ or $$...$$ 
+       - DO NOT use backslashes (\)
+       - Use ONLY simple HTML tags
        
-       EXAMPLE JSON STRING:
-       "question": "<p>Calculate the area.</p><p>$$A = \\\\pi r^2$$</p>"
+       ALLOWED:
+       - Powers: <sup>2</sup> for x²
+       - Roots: √ symbol or "sqrt()"
+       - Fractions: (numerator)/(denominator)
+       - Variables: <em>x</em>, <em>y</em>
+       - Greek: π, θ, α (direct Unicode)
+       
+       EXAMPLES:
+       ✓ CORRECT: "<em>x</em><sup>2</sup> + 5<em>x</em> + 6"
+       ✓ CORRECT: "√(2<sup>2</sup> + (-3.5)<sup>2</sup>)"
+       ✓ CORRECT: "(20.24 - ∛30) / 6.5"
+       ✗ WRONG: "$x^2 + 5x + 6$"
+       ✗ WRONG: "$\sqrt{2^2 + (-3.5)^2}$"
     
-    3. DIAGRAMS - If question has diagram/graph/image:
-       - Set hasDiagram: true
-       - Provide ACCURATE bbox [ymin, xmin, ymax, xmax] in 0-1000 scale
-       - bbox should tightly bound ONLY the diagram (not text)
+    3. DIAGRAMS/TABLES/GRAPHS (CRITICAL - 100% ACCURACY REQUIRED):
+       
+       *** YOU MUST DETECT ALL VISUAL ELEMENTS - NO EXCEPTIONS ***
+       
+       Set hasDiagram: true for ANY of these:
+       - Diagrams (shapes, figures, geometric drawings)
+       - Tables (data in rows/columns)
+       - Graphs (line graphs, bar charts, pie charts, scatter plots)
+       - Charts (any visual data representation)
+       - Grids (coordinate grids, number lines)
+       - Images (photos, illustrations)
+       - Maps, flowcharts, tree diagrams
+       - ANY visual element that is not plain text
+       
+       BBOX REQUIREMENTS (CRITICAL - MUST INCLUDE EVERYTHING):
+       - Format: [ymin, xmin, ymax, xmax] in 0-1000 scale
+       - ymin < ymax (top must be less than bottom)
+       - xmin < xmax (left must be less than right)
+       
+       *** BBOX MUST INCLUDE ALL THESE ELEMENTS ***:
+       - ALL shapes, lines, and geometric elements
+       - ALL labels (A, B, C, North, South, etc.)
+       - ALL measurements (65m, 95m, 38°, etc.)
+       - ALL arrows and direction indicators
+       - ALL text annotations ("NOT TO SCALE", etc.)
+       - ALL axis labels, legends, titles
+       - ALL table headers and data cells
+       
+       BBOX STRATEGY:
+       1. Find the TOPMOST element (label, arrow, text) → ymin
+       2. Find the LEFTMOST element → xmin
+       3. Find the BOTTOMMOST element → ymax
+       4. Find the RIGHTMOST element → xmax
+       5. Add generous margin (bbox should be LARGER than minimum)
+       
+       VALIDATION CHECKLIST:
+       ✓ Is there ANY visual element? → hasDiagram: true
+       ✓ Does bbox include ALL labels and text?
+       ✓ Does bbox include ALL arrows and indicators?
+       ✓ Does bbox include ALL measurements and annotations?
+       ✓ Are coordinates in correct order (min < max)?
+       ✓ Are values in 0-1000 range?
+       ✓ Is bbox generous (not too tight)?
     
     4. QUESTION TYPE:
        - "subjective" (calculation/explanation), "objective" (MCQ), "drawing", "graph"
@@ -541,9 +651,31 @@ async function analyzePage(imagePath, pageIndex, curriculumMapString) {
             generationConfig: { responseMimeType: "application/json" }
         }));
 
-        let cleaned = repairJson(extractResult.response.text());
+        const rawResponse = extractResult.response.text();
+        console.log(`    [Raw Response Length] ${rawResponse.length} characters`);
+        if (rawResponse.length < 100) {
+            console.log(`    [Raw Response] ${rawResponse}`);
+        }
+
+        let cleaned = repairJson(rawResponse);
         let parsed = JSON.parse(cleaned);
-        questions = parsed.questions || [];
+
+        // Handle both formats: {"questions": [...]} or directly [...]
+        if (Array.isArray(parsed)) {
+            console.log(`    [Format] Direct array (${parsed.length} items)`);
+            questions = parsed;
+        } else if (parsed.questions && Array.isArray(parsed.questions)) {
+            console.log(`    [Format] Object with questions key (${parsed.questions.length} items)`);
+            questions = parsed.questions;
+        } else {
+            console.log(`    [WARNING] Unexpected JSON structure!`);
+            console.log(`    [Parsed Keys] ${Object.keys(parsed).join(', ')}`);
+            console.log(`    [Parsed JSON] ${JSON.stringify(parsed).substring(0, 500)}`);
+            questions = [];
+        }
+
+        console.log(`    [Extracted] ${questions.length} questions from page`);
+        questions.forEach(q => console.log(`      - Q${q.questionNumber || '?'}: ${q.question ? q.question.substring(0, 50) + '...' : 'NO TEXT'}`));
     } catch (e) {
         console.error(`    [Error] Extracting questions: ${e.message}`);
         return { questions: [] };
@@ -556,7 +688,25 @@ async function analyzePage(imagePath, pageIndex, curriculumMapString) {
         // Async matching to allow for Visual Solution Generation
         const matchPromises = questions.map(async q => {
             const qNum = q.questionNumber;
-            const bankEntry = answerBank[qNum];
+            let bankEntry = answerBank[qNum];
+
+            // Smart matching: If exact match fails, try common variations
+            if (!bankEntry && qNum) {
+                // Try adding (a), (b), (i), etc. for multi-part questions
+                const variations = [
+                    `${qNum}(a)`, `${qNum}(b)`, `${qNum}(c)`, `${qNum}(d)`,
+                    `${qNum}(i)`, `${qNum}(ii)`, `${qNum}(iii)`,
+                    `${qNum}a`, `${qNum}b`, `${qNum}c`
+                ];
+
+                for (const variant of variations) {
+                    if (answerBank[variant]) {
+                        bankEntry = answerBank[variant];
+                        console.log(`    [Smart Match] ${qNum} -> ${variant}`);
+                        break;
+                    }
+                }
+            }
 
             if (qNum && bankEntry) {
                 let enrichedInfo = { ...bankEntry };
@@ -601,8 +751,34 @@ async function analyzePage(imagePath, pageIndex, curriculumMapString) {
         q.questionType = normalizeQuestionType(q.questionType || "subjective");
         q.level = normalizeLevel(q.level || "Medium");
         q.point = q.point || 1;
+
+        // Strip any LaTeX that slipped through
+        if (q.question) q.question = stripLatex(q.question);
+        if (q.answer) q.answer = stripLatex(q.answer);
+        if (q.solution) q.solution = stripLatex(q.solution);
+        if (q.explanation) q.explanation = stripLatex(q.explanation);
+
+        // Validate curriculum IDs - must be valid MongoDB ObjectIds (24 hex chars)
+        // If Gemini returns a name instead of ID, remove it to prevent database errors
+        const isValidObjectId = (id) => id && typeof id === 'string' && /^[0-9a-fA-F]{24}$/.test(id);
+
+        if (q.chapterId && !isValidObjectId(q.chapterId)) {
+            console.warn(`    [ID Warning] Invalid chapterId "${q.chapterId}" removed`);
+            delete q.chapterId;
+        }
+        if (q.topicId && !isValidObjectId(q.topicId)) {
+            console.warn(`    [ID Warning] Invalid topicId "${q.topicId}" removed`);
+            delete q.topicId;
+        }
+        if (q.subtopicId && !isValidObjectId(q.subtopicId)) {
+            console.warn(`    [ID Warning] Invalid subtopicId "${q.subtopicId}" removed`);
+            delete q.subtopicId;
+        }
+
         return q;
     });
+
+    console.log(`    [Validation] ${beforeFilter} questions extracted, ${questions.length} passed validation (${beforeFilter - questions.length} filtered out)`);
 
     return { questions };
 }
@@ -612,20 +788,89 @@ async function cropAndUpload(questionData, sourceImagePath) {
     let imageStream = null;
     process.stdout.write(`  [Q] ${questionData.question ? questionData.question.substring(0, 20) : "Unknown"}... `);
 
-    // Bbox cropping
+    // Bbox cropping with comprehensive error handling
     if (questionData.hasDiagram && questionData.bbox && questionData.bbox.length === 4) {
         try {
             const m = await sharp(sourceImagePath).metadata();
             let [y1, x1, y2, x2] = questionData.bbox;
-            // Add padding (2.5% to avoid cutting off)
-            y1 = Math.max(0, y1 - 25); x1 = Math.max(0, x1 - 25);
-            y2 = Math.min(1000, y2 + 25); x2 = Math.min(1000, x2 + 25);
-            const t = Math.floor((y1 / 1000) * m.height), l = Math.floor((x1 / 1000) * m.width), h = Math.floor(((y2 - y1) / 1000) * m.height), w = Math.floor(((x2 - x1) / 1000) * m.width);
-            if (w > 0 && h > 0) {
-                imageStream = await sharp(sourceImagePath).extract({ left: l, top: t, width: w, height: h }).toBuffer();
-                process.stdout.write("[Diagram] ");
+
+            // Validate bbox values
+            if (y1 < 0 || x1 < 0 || y2 > 1000 || x2 > 1000 || y1 >= y2 || x1 >= x2) {
+                console.error(`\n    [Diagram Error] Invalid bbox: [${y1}, ${x1}, ${y2}, ${x2}]`);
+                process.stdout.write("[Diagram FAILED - Invalid bbox] ");
+            } else {
+                // Add padding (5% to ensure complete capture - especially for tables)
+                y1 = Math.max(0, y1 - 50); x1 = Math.max(0, x1 - 50);
+                y2 = Math.min(1000, y2 + 50); x2 = Math.min(1000, x2 + 50);
+                const t = Math.floor((y1 / 1000) * m.height), l = Math.floor((x1 / 1000) * m.width), h = Math.floor(((y2 - y1) / 1000) * m.height), w = Math.floor(((x2 - x1) / 1000) * m.width);
+
+                if (w <= 0 || h <= 0) {
+                    console.error(`\n    [Diagram Error] Invalid dimensions: w=${w}, h=${h}`);
+                    process.stdout.write("[Diagram FAILED - Zero size] ");
+                } else {
+                    // Extract the diagram
+                    const croppedBuffer = await sharp(sourceImagePath).extract({ left: l, top: t, width: w, height: h }).toBuffer();
+
+                    // Verify diagram is complete using Gemini Vision
+                    try {
+                        // Save temp file for verification
+                        const tempPath = `/tmp/diagram_verify_${Date.now()}.png`;
+                        await sharp(croppedBuffer).toFile(tempPath);
+                        const verifyFile = await uploadToGemini(tempPath);
+
+                        const verifyPrompt = `
+                        Analyze this cropped diagram/table/graph.
+                        
+                        CRITICAL QUESTION: Is this visual element COMPLETE or PARTIALLY CUT OFF?
+                        
+                        Check for:
+                        - Are all edges visible? (not cut off at borders)
+                        - For diagrams: Are all labels, arrows, points visible?
+                        - For tables: Are all rows and columns complete?
+                        - For graphs: Are axes, labels, legend all visible?
+                        
+                        Respond with JSON:
+                        {
+                          "isComplete": true/false,
+                          "missingElements": "description of what's cut off, or 'none' if complete"
+                        }
+                        `;
+
+                        const verifyResult = await model.generateContent([
+                            verifyPrompt,
+                            { fileData: { fileUri: verifyFile.uri, mimeType: "image/png" } }
+                        ]);
+
+                        const verifyText = verifyResult.response.text();
+                        const verification = JSON.parse(repairJson(verifyText));
+
+                        if (verification.isComplete) {
+                            imageStream = croppedBuffer;
+                            process.stdout.write("[Diagram ✓] ");
+                        } else {
+                            console.warn(`\n    [Diagram Warning] Incomplete crop detected: ${verification.missingElements}`);
+                            console.warn(`    [Diagram Warning] Using cropped version anyway, but may be incomplete`);
+                            imageStream = croppedBuffer;
+                            process.stdout.write("[Diagram ⚠ Incomplete] ");
+                        }
+
+                        // Cleanup
+                        require('fs').unlinkSync(tempPath);
+                    } catch (verifyError) {
+                        // If verification fails, use the cropped image anyway
+                        console.warn(`\n    [Diagram Warning] Verification failed: ${verifyError.message}`);
+                        imageStream = croppedBuffer;
+                        process.stdout.write("[Diagram ✓ Unverified] ");
+                    }
+                }
             }
-        } catch (e) { }
+        } catch (e) {
+            console.error(`\n    [Diagram Error] ${e.message}`);
+            process.stdout.write("[Diagram FAILED] ");
+        }
+    } else if (questionData.hasDiagram) {
+        console.error(`\n    [Diagram Error] hasDiagram=true but bbox missing or invalid`);
+        process.stdout.write("[Diagram FAILED - No bbox] ");
     }
 
     const form = new FormData();
@@ -657,8 +902,8 @@ async function cropAndUpload(questionData, sourceImagePath) {
     const year = Array.isArray(NEW_DEFAULTS.year) ? NEW_DEFAULTS.year[0] : NEW_DEFAULTS.year;
     const month = Array.isArray(NEW_DEFAULTS.month) ? NEW_DEFAULTS.month[0] : NEW_DEFAULTS.month;
 
-    form.append('year', year);
-    form.append('month', month);
+    form.append('year', JSON.stringify([year || 2025]));
+    form.append('month', JSON.stringify([month || "Feb/March"]));  // Schema expects array
     form.append('paper', JSON.stringify(NEW_DEFAULTS.paper));
 
     if (questionData.tags) form.append('tags', JSON.stringify(questionData.tags));
@@ -666,10 +911,13 @@ async function cropAndUpload(questionData, sourceImagePath) {
 
     if (imageStream) form.append('file', imageStream, { filename: 'diagram.png', contentType: 'image/png' });
 
-    // Debug: Log year/month being sent (only for first question)
-    if (Math.random() < 0.1) { // Log ~10% of requests to avoid spam
-        console.log(`\n[DEBUG] Sending: year=${year}, month=${month}, paper=${JSON.stringify(NEW_DEFAULTS.paper)}`);
+    // Validation: Warn if diagram was detected but not uploaded
+    if (questionData.hasDiagram && !imageStream) {
+        console.warn(`\n    [WARNING] Question has hasDiagram=true but no image uploaded!`);
     }
+
+    // Debug: Always log year/month being sent
+    console.log(`[Upload Debug] year=${year}, month=${month}, paper=${JSON.stringify(NEW_DEFAULTS.paper)}`);
 
     try {
         const res = await axios.post(`${API_BASE_URL}/question/create-question`, form, { headers: { ...form.getHeaders(), 'Authorization': `Bearer ${ACCESS_TOKEN}` } });
@@ -722,7 +970,9 @@ async function main() {
                         NEW_DEFAULTS.paper = [pStr];
                     }
                 }
-                // We could also update year/month if needed
+                // Update year/month if detected
+                if (result.metadata.year) NEW_DEFAULTS.year = [result.metadata.year];
+                if (result.metadata.month) NEW_DEFAULTS.month = [result.metadata.month];
             }
 
             if (!result || !result.questions || result.questions.length === 0) continue;
@@ -738,27 +988,63 @@ main();
 
 async function generateVisualSolution(questionText, qNum, msPageUri) {
     const prompt = `
-    You are an expert Math Tutor. 
-    Can you look at the Marking Scheme (Image provided) for Question "${qNum}"?
+    You are an expert IGCSE Math Examiner analyzing a Marking Scheme.
     
-    The Question is: "${questionText.replace(/<[^>]*>/g, '')}"
+    QUESTION NUMBER: "${qNum}"
+    QUESTION TEXT: "${questionText.replace(/<[^>]*>/g, '')}"
     
-    TASK:
-    Generate a BEAUTIFUL, DETAILED, STEP-BY-STEP solution in HTML.
+    TASK: Analyze the Marking Scheme image and provide a complete solution.
     
-    INSTRUCTIONS:
-    1. Locate the answer for "${qNum}" in the Marking Scheme image.
-    2. Write a full explanation of how to get that answer.
-    3. If the marking scheme shows a diagram, describe it or use HTML to represent it if possible.
-    4. Use proper HTML formatting <p>, <strong>, <ul>.
-    5. MATH FORMATTING: Use LaTeX for equations inside $...$.
-       - CRITICAL: Escape backslashes for JSON! Use \\\\ for a single backslash.
-       - Example: "$A = \\\\pi r^2$"
+    CRITICAL INSTRUCTIONS:
+    
+    1. MARKING SCHEME ANALYSIS:
+       - First, locate Question "${qNum}" in the Marking Scheme image
+       - Identify the EXACT answer shown in the marking scheme
+       - Note all marking points and step marks
+       - If there are diagrams, tables, or graphs in the marking scheme, describe them accurately
+    
+    2. TABLE/MATRIX DETECTION (CRITICAL - COUNT CAREFULLY):
+       *** FOR TABLES/MATRICES: COUNT EVERY ROW AND COLUMN ***
+       - Count the number of ROWS (horizontal lines of data)
+       - Count the number of COLUMNS (vertical lines of data)
+       - Verify you counted ALL rows including header and ALL columns
+       - Example: If you see a grid, count: 1, 2, 3, 4, 5 rows and 1, 2, 3, 4, 5 columns
+       - DO NOT assume size - COUNT EXPLICITLY
+       - Include ALL cells in your description, even empty ones
+    
+    3. EXACT ANSWER:
+       - Extract the EXACT final answer from the marking scheme
+       - For tables/matrices: Include COMPLETE table with ALL rows and columns
+       - Include units, formatting, and precision as shown
+       - Do NOT modify, truncate, or approximate the answer
+    
+    4. SOLUTION STEPS:
+       - Write a clear, step-by-step explanation
+       - Reference the marking scheme explicitly (e.g., "According to the marking scheme...")
+       - Explain each marking point
+       - For tables: Recreate the COMPLETE table in HTML with ALL rows/columns
+       - For diagrams: Describe ALL elements visible in the marking scheme
+    
+    5. HTML FORMATTING:
+       - Use <p>, <strong>, <ul>, <li> for structure
+       - For tables: Use <table><tr><td> with ALL rows and columns
+       - Make it visually clear and easy to read
+    
+    6. MATH FORMATTING (NO LATEX):
+       *** ABSOLUTELY NO DOLLAR SIGNS ($) OR LATEX SYNTAX ***
+       - Powers: <sup>2</sup>
+       - Roots: √ or sqrt()
+       - Fractions: (a)/(b) format
+       - Greek: π, θ (direct Unicode)
+       
+       ✓ CORRECT: "<em>A</em> = π<em>r</em><sup>2</sup>"
+       ✓ CORRECT: "√(2<sup>2</sup> + 3<sup>2</sup>)"
+       ✗ WRONG: "$A = \\pi r^2$"
     
     OUTPUT JSON (Valid JSON String):
     {
-       "solution": "<p><strong>Step 1:</strong> Use formula $A = \\\\pi r^2$...</p>",
-       "explanation": "Brief conceptual explanation..."
+       "solution": "<p><strong>Marking Scheme Analysis:</strong></p><p>According to the marking scheme, the answer is [EXACT COMPLETE ANSWER WITH ALL TABLE ROWS/COLUMNS].</p><p><strong>Step 1:</strong> [First step with explanation]</p><p><strong>Step 2:</strong> [Second step]...</p>",
+       "explanation": "Brief conceptual explanation of the method used"
     }
     `;
 

@@ -719,6 +719,13 @@ async function analyzePage(imagePath, pageIndex, curriculumMapString) {
                     if (visualSol && visualSol.solution) {
                         enrichedInfo.solution = visualSol.solution;
                         if (visualSol.explanation) enrichedInfo.explanation = visualSol.explanation;
+
+                        // Store answer image info if detected
+                        if (visualSol.hasAnswerImage && visualSol.answerBbox) {
+                            enrichedInfo.hasAnswerImage = true;
+                            enrichedInfo.answerBbox = visualSol.answerBbox;
+                            enrichedInfo.msPageIndex = bankEntry.msPageIndex; // For cropping later
+                        }
                     }
                 }
 
@@ -873,6 +880,28 @@ async function cropAndUpload(questionData, sourceImagePath) {
         process.stdout.write("[Diagram FAILED - No bbox] ");
     }
 
+    // ANSWER IMAGE CROPPING (for tables/matrices in marking scheme)
+    let answerImageStream = null;
+    if (questionData.hasAnswerImage && questionData.answerBbox && typeof questionData.msPageIndex === 'number') {
+        try {
+            const msImagePath = path.join(MS_IMAGES_DIR, `page-${questionData.msPageIndex + 1}.png`);
+            if (fs.existsSync(msImagePath)) {
+                const m = await sharp(msImagePath).metadata();
+                let [y1, x1, y2, x2] = questionData.answerBbox;
+                if (y1 >= 0 && x1 >= 0 && y2 <= 1000 && x2 <= 1000 && y1 < y2 && x1 < x2) {
+                    y1 = Math.max(0, y1 - 50); x1 = Math.max(0, x1 - 50);
+                    y2 = Math.min(1000, y2 + 50); x2 = Math.min(1000, x2 + 50);
+                    const t = Math.floor((y1 / 1000) * m.height), l = Math.floor((x1 / 1000) * m.width), h = Math.floor(((y2 - y1) / 1000) * m.height), w = Math.floor(((x2 - x1) / 1000) * m.width);
+                    if (w > 0 && h > 0) {
+                        answerImageStream = await sharp(msImagePath).extract({ left: l, top: t, width: w, height: h }).toBuffer();
+                        process.stdout.write("[Answer Image ✓] ");
+                    }
+                }
+            }
+        } catch (e) { console.warn(`\n[Answer Image Error] ${e.message}`); }
+    }
+
+
     const form = new FormData();
     // Core Fields
     form.append('question', questionData.question || "");
@@ -1012,13 +1041,21 @@ async function generateVisualSolution(questionText, qNum, msPageUri) {
        - DO NOT assume size - COUNT EXPLICITLY
        - Include ALL cells in your description, even empty ones
     
-    3. EXACT ANSWER:
+    3. ANSWER IMAGE DETECTION (CRITICAL FOR TABLES/MATRICES/DIAGRAMS):
+       *** IF THE ANSWER IS A VISUAL ELEMENT (table/matrix/diagram): ***
+       - Set hasAnswerImage: true
+       - Provide answerBbox: [ymin, xmin, ymax, xmax] in 0-1000 scale
+       - The bbox should tightly bound the COMPLETE answer visual element
+       - Include ALL rows, columns, labels, and annotations in bbox
+       - This will be cropped and attached as an image to the question
+    
+    4. EXACT ANSWER:
        - Extract the EXACT final answer from the marking scheme
        - For tables/matrices: Include COMPLETE table with ALL rows and columns
        - Include units, formatting, and precision as shown
        - Do NOT modify, truncate, or approximate the answer
     
-    4. SOLUTION STEPS:
+    5. SOLUTION STEPS:
        - Write a clear, step-by-step explanation
        - Reference the marking scheme explicitly (e.g., "According to the marking scheme...")
        - Explain each marking point
@@ -1043,6 +1080,8 @@ async function generateVisualSolution(questionText, qNum, msPageUri) {
     
     OUTPUT JSON (Valid JSON String):
     {
+       "hasAnswerImage": true/false,
+       "answerBbox": [ymin, xmin, ymax, xmax] or null,
        "solution": "<p><strong>Marking Scheme Analysis:</strong></p><p>According to the marking scheme, the answer is [EXACT COMPLETE ANSWER WITH ALL TABLE ROWS/COLUMNS].</p><p><strong>Step 1:</strong> [First step with explanation]</p><p><strong>Step 2:</strong> [Second step]...</p>",
        "explanation": "Brief conceptual explanation of the method used"
     }
